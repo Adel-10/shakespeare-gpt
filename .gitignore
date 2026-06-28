@@ -1,0 +1,23 @@
+# --- the learning notebook (kept locally, not part of the code repo) ---
+*.ipynb
+.ipynb_checkpoints/
+
+# --- trained model checkpoints (regenerate with: python -m gpt.train) ---
+*.pt
+*.pth
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# --- virtual environments ---
+.venv/
+venv/
+env/
+
+# --- OS / editor cruft ---
+.DS_Store
+.vscode/
+.idea/

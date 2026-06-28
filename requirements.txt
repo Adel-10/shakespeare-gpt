@@ -1,0 +1,7 @@
+# Core dependency for the model, training, and generation:
+torch
+
+# Optional — only needed to regenerate the figures in assets/ or run the
+# (not-included) learning notebook:
+# numpy
+# matplotlib
