@@ -46,7 +46,18 @@ def build_config(vocab_size, large=True):
 
 
 def lr_at(step, warmup, max_steps, lr, min_lr):
-    """Linear warmup for `warmup` steps, then cosine-decay down to min_lr."""
+    """Learning-rate schedule: warmup first, then cosine decay.
+
+    Warmup:
+    At the start of training the model weights are still random, so full-size
+    updates can be unstable. For the first `warmup` steps, start with a tiny
+    learning rate and increase it linearly until it reaches `lr`.
+
+    Cosine decay:
+    After warmup, gradually lower the learning rate from `lr` to `min_lr`.
+    This lets training make large useful moves early, then smaller fine-tuning
+    moves near the end.
+    """
     if step < warmup:
         return lr * (step + 1) / warmup
     if step > max_steps:
@@ -136,8 +147,13 @@ def main():
         loss = F.cross_entropy(logits.view(B * T, V), yb.view(B * T))
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
+        # Gradient clipping: if the combined gradient size is above 1.0,
+        # scale all gradients down before optimizer.step() uses them.
+        # This keeps one unusually large update from destabilizing training.
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         optimizer.step()
+        # Count how many token positions were trained on this step:
+        # B sequences * T positions per sequence.
         tokens_seen += B * T
         if args.rest:
             time.sleep(args.rest)   # duty-cycle: let the chip cool between steps
