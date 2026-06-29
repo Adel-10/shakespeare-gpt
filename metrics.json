@@ -1,0 +1,9 @@
+{
+  "best_val_loss": 1.4715614318847656,
+  "perplexity": 4.356031480115759,
+  "loss_reduction_pct": 64.74784592945647,
+  "params": 10714817,
+  "chars": 1115394,
+  "best_iter": 5500,
+  "tokens_per_sec": 9802.738308406284
+}

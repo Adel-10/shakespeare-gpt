@@ -44,7 +44,7 @@ import torch.nn.functional as F
 
 
 @torch.no_grad()
-def generate(model, idx, max_new_tokens, temperature=1.0, top_k=None, greedy=False):
+def generate(model, idx, max_new_tokens, temperature=1.0, top_k=None, top_p=None, greedy=False):
     """Continue the sequence `idx` (shape (B, T)) by `max_new_tokens` characters.
 
     Returns a LongTensor of shape (B, T + max_new_tokens).
@@ -62,6 +62,16 @@ def generate(model, idx, max_new_tokens, temperature=1.0, top_k=None, greedy=Fal
         if top_k is not None:
             kth = torch.topk(logits, min(top_k, logits.size(-1))).values[:, [-1]]
             logits = logits.masked_fill(logits < kth, float("-inf"))
+        # 4b. optional top-p (nucleus): keep the smallest set of chars whose
+        #     probabilities sum to >= top_p; drop the rest. A smarter alternative
+        #     to top-k that adapts how many candidates to keep per step.
+        if top_p is not None:
+            s_logits, s_idx = torch.sort(logits, descending=True, dim=-1)
+            s_probs = F.softmax(s_logits, dim=-1)
+            # remove chars once the cumulative prob BEFORE them already exceeds top_p
+            remove = (s_probs.cumsum(dim=-1) - s_probs) > top_p
+            remove = torch.zeros_like(remove).scatter(-1, s_idx, remove)
+            logits = logits.masked_fill(remove, float("-inf"))
         # 5. turn logits into probabilities and choose the next character
         probs = F.softmax(logits, dim=-1)            # (B, vocab_size)
         if greedy:
@@ -82,6 +92,8 @@ Inputs:
 - max_new_tokens: how many new tokens to append.
 - temperature: controls randomness by scaling logits before softmax.
 - top_k: if set, keeps only the k most likely next-token choices.
+- top_p: if set, keeps only the smallest group of likely tokens whose
+  probabilities add up to top_p.
 - greedy: if True, always picks the most likely token instead of sampling.
 
 The loop adds one token at a time:
@@ -339,6 +351,95 @@ Later, probs = F.softmax(logits, dim=-1) turns -inf logits into probability 0.
 top_k means before sampling, throw away every next-token option except the k most likely ones.
 For your Shakespeare model, top_k = 10 or top_k = 20 can be useful because it keeps the text
 from choosing extremely unlikely characters while still allowing some creativity.
+
+
+4b.
+If top_p is set, use nucleus sampling.
+top_p is another sampling filter, like top_k, but it works by probability mass instead
+of by a fixed number of tokens.
+The code is:
+if top_p is not None:
+    s_logits, s_idx = torch.sort(logits, descending=True, dim=-1)
+    s_probs = F.softmax(s_logits, dim=-1)
+    remove = (s_probs.cumsum(dim=-1) - s_probs) > top_p
+    remove = torch.zeros_like(remove).scatter(-1, s_idx, remove)
+    logits = logits.masked_fill(remove, float("-inf"))
+
+The goal is:
+Keep only the smallest set of most likely next tokens whose total probability
+reaches top_p, then remove the rest.
+For example, if top_p = 0.9, sampling only chooses from the likely tokens that
+together cover about 90% of the probability mass.
+
+First, sort the logits from highest to lowest:
+s_logits, s_idx = torch.sort(logits, descending=True, dim=-1)
+The sorted logits are stored in s_logits.
+The original vocabulary positions are stored in s_idx.
+This matters because after filtering in sorted order, we need to move the mask
+back to the original vocabulary order.
+
+Example:
+logits = [1.2, 4.0, 0.5, 2.0]
+After sorting:
+s_logits = [4.0, 2.0, 1.2, 0.5]
+s_idx    = [1,   3,   0,   2]
+So the highest logit was originally at index 1, the next was originally at index 3,
+then index 0, then index 2.
+
+Then convert the sorted logits into probabilities:
+s_probs = F.softmax(s_logits, dim=-1)
+Example:
+s_probs = [0.78, 0.11, 0.07, 0.04]
+These probabilities add up to 1.0.
+
+Then compute which sorted tokens should be removed:
+remove = (s_probs.cumsum(dim=-1) - s_probs) > top_p
+The cumsum gives the running total probability:
+s_probs: [0.78, 0.11, 0.07, 0.04]
+cumsum:  [0.78, 0.89, 0.96, 1.00]
+
+But the code subtracts s_probs from cumsum:
+s_probs.cumsum(dim=-1) - s_probs
+That gives the cumulative probability before each token:
+before:  [0.00, 0.78, 0.89, 0.96]
+
+This is why the comment says:
+remove chars once the cumulative prob BEFORE them already exceeds top_p.
+If top_p = 0.9, then:
+before:       [0.00, 0.78, 0.89, 0.96]
+before > 0.9: [False, False, False, True]
+Only the last token is removed.
+The token that pushes the total over top_p is still kept.
+That is important because it makes sure the kept tokens actually reach the top_p threshold.
+
+At this point, remove is in sorted order, but logits is still in original vocabulary order.
+So this line moves the remove mask back to the original token positions:
+remove = torch.zeros_like(remove).scatter(-1, s_idx, remove)
+
+Using the same example:
+s_idx sorted positions: [1, 3, 0, 2]
+remove sorted:          [False, False, False, True]
+The True belongs to sorted position 3, which came from original index 2.
+So after scatter, the mask becomes:
+remove original order:  [False, False, True, False]
+
+Finally, mask the removed logits:
+logits = logits.masked_fill(remove, float("-inf"))
+Example:
+logits before: [1.2, 4.0, 0.5, 2.0]
+remove:        [False, False, True, False]
+logits after:  [1.2, 4.0, -inf, 2.0]
+
+Later, probs = F.softmax(logits, dim=-1) turns -inf into probability 0.
+So removed tokens cannot be sampled.
+
+Short version:
+top_p sorts possible next tokens by likelihood, keeps the most likely group whose
+probabilities add up to top_p, maps that decision back to the original vocabulary order,
+and sets every other token to -inf so sampling cannot pick it.
+top_p adapts how many choices are allowed at each step.
+If the model is very confident, it may keep only a few tokens.
+If the model is uncertain, it may keep more tokens.
 
 
 5.
